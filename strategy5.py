@@ -6,6 +6,7 @@ from scipy.signal import argrelextrema
 from datetime import datetime, timedelta
 import os
 import time
+
 # New: Simple 2D Kalman Filter class for smoothing time series (position-velocity model)
 class KalmanFilter:
     def __init__(self, F, H, Q, R, x0, P0):
@@ -42,8 +43,6 @@ def smooth_macd(macd_values, process_noise=0.1, measurement_noise=1.0):
     Q = np.eye(2) * process_noise  # Process noise (controls responsiveness)
     R = np.array([[measurement_noise]])
     
-    
-    
     # Measurement noise (controls smoothing)
     x0 = np.array([[macd_values[0]], [0]])  # Initial state: position = first MACD, velocity=0
     P0 = np.eye(2)  # Initial covariance
@@ -54,6 +53,8 @@ def smooth_macd(macd_values, process_noise=0.1, measurement_noise=1.0):
         kf.predict()
         smoothed.append(kf.update(np.array([[val]])))
     return np.array(smoothed)
+
+start_time = time.time()
 
 # Read tickers from EQUITY_L.csv
 desktop_path = os.path.join(os.path.expanduser("~"), "Desktop")
@@ -98,13 +99,13 @@ for ticker in tickers:
     smoothed_macd = smooth_macd(macd_line_values, process_noise=0.1, measurement_noise=1.0)
     
     # After computing smoothed_macd
-    potential = False
+    potential = True
     if len(smoothed_macd) >= 3:
         last = smoothed_macd[-1]
         prev1 = smoothed_macd[-2]
         prev2 = smoothed_macd[-3]
         if last < 0 and last < prev1 and last < prev2:
-            potential = True
+            potential = False
             print(f"Potential buy signal forming for {ticker} this week")
 
     potential_dict[ticker] = potential
@@ -169,28 +170,35 @@ for ticker in tickers:
             })
 
     if position:
+        # Get the current close price (latest close from data)
+        current_close = df['Close'].iloc[-1]
+        current_return = ((current_close - entry_price) / entry_price) * 100
         trades.append({
             'Ticker': ticker,
             'Entry Date': entry_date.strftime('%Y-%m-%d'),
             'Entry Price': round(entry_price, 2),
             'Exit Date': None,
             'Exit Price': None,
-            'Return %': None,
+            'Return %': round(current_return, 2),
             'Status': 'Open'
         })
 
+    all_trades.extend(trades)
     if trades:
-        all_trades.extend(trades)
         print(f"Trades for {ticker}:")
         print(pd.DataFrame(trades))
     else:
-        print(f"No trades generated in the backtest for {ticker}.")
+        print(f"No trades for {ticker}.")
 
 if all_trades:
     trades_df = pd.DataFrame(all_trades)
     trades_df['potential'] = trades_df['Ticker'].map(potential_dict)
-    filename = f"backtest_report_all_{timestamp}.csv"
+    filename = f"all_trades_report_{timestamp}.csv"
     trades_df.to_csv(filename, index=False)
-    print(f"Combined backtest report saved to '{filename}'")
+    print(f"Combined all trades report saved to '{filename}'")
 else:
-    print("No trades generated across all tickers.")
+    print("No trades across all tickers.")
+
+end_time = time.time()
+total_time = end_time - start_time
+print(f"Total time taken: {total_time:.2f} seconds")
