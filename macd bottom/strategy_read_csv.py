@@ -2,7 +2,12 @@ import pandas as pd
 import numpy as np
 import os
 import talib
-from datetime import datetime, timedelta
+from scipy.signal import argrelextrema
+import time
+import hmmlearn.hmm
+
+# Record start time
+start_time = time.time()
 
 # Step 1: Define the path to stock_data.csv on the Desktop
 desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
@@ -139,47 +144,96 @@ for ticker in tickers:
         print(f"Error processing {ticker}: {e}")
         continue
 
-# Step 6: Find local minima of the MACD line for each ticker within the past 1 month
-def find_local_minima(series):
+# Step 6: Find local minima of the smoothed MACD line for each ticker and compute HMM probabilities
+def find_local_minima(series, order=1):
     """
-    Find local minima in a series where value < previous and value < next.
-    Returns the indices (dates) of minima.
+    Find local minima in a series using scipy's argrelextrema.
+    - series: A pandas Series with a DatetimeIndex.
+    - order: How many points on each side to use for comparison.
+    Returns the indices (dates) of the local minima.
     """
-    minima = (series.shift(1) > series) & (series.shift(-1) > series)
-    return series.index[minima]
-
-# Define the date range for the past 1 month
-end_date = pd.to_datetime('2025-08-06')
-start_date = end_date - timedelta(days=30)  # Approximately 1 month
+    minima_indices = argrelextrema(series.values, np.less, order=order)[0]
+    return series.index[minima_indices]
 
 # Initialize a list to store minima for all tickers
 minima_results = []
 if not cleaned_data.empty:
     for ticker in cleaned_data.columns.get_level_values(0).unique():
         try:
-            macd_series = cleaned_data[(ticker, 'MACD')].dropna()
-            if len(macd_series) > 2:  # Need at least 3 points for minima
-                # Find minima
-                minima_dates = find_local_minima(macd_series)
-                # Filter for minima within the past 1 month
-                recent_minima = minima_dates[(minima_dates >= start_date) & (minima_dates <= end_date)]
-                if not recent_minima.empty:
-                    # Append rows with ticker, date, and MACD value
-                    for date in recent_minima:
-                        minima_results.append({
-                            'Date': date,
-                            'Ticker': ticker,
-                            'MACD': macd_series.loc[date]
-                        })
+            # Use smoothed MACD for minima detection and HMM
+            smoothed_macd_series = cleaned_data[(ticker, 'Smoothed_MACD')].dropna()
+            if len(smoothed_macd_series) > 2:  # Need at least 3 points for minima
+                # Find all minima on smoothed MACD
+                minima_dates = find_local_minima(smoothed_macd_series, order=1)
+                if not minima_dates.empty:
+                    # Only train HMM if minima are found and sufficient data exists
+                    if len(smoothed_macd_series) >= 50:  # Minimum data points for HMM
+                        try:
+                            # Prepare data for HMM (2D array for hmmlearn)
+                            X = smoothed_macd_series.values.reshape(-1, 1)
+                            # Initialize and fit Gaussian HMM with 4 states
+                            hmm_model = hmmlearn.hmm.GaussianHMM(
+                                n_components=4,
+                                covariance_type='diag',
+                                n_iter=100,
+                                tol=1e-4,
+                                random_state=42  # For reproducibility
+                            )
+                            hmm_model.fit(X)
+                            # Predict posterior probabilities for all data points
+                            state_probs = hmm_model.predict_proba(X)
+                            # Get state means and assign labels
+                            state_means = hmm_model.means_.flatten()
+                            state_labels = [''] * 4
+                            sorted_indices = np.argsort(state_means)
+                            state_labels[sorted_indices[0]] = 'bearish'  # Lowest mean
+                            state_labels[sorted_indices[3]] = 'bullish'  # Highest mean
+                            state_labels[sorted_indices[2]] = 'trend reversal'  # Second-highest
+                            # Find state closest to zero mean
+                            zero_diff = np.abs(state_means)
+                            state_labels[np.argmin(zero_diff)] = 'consolidation'
+                            # Find bearish state index
+                            bearish_idx = [i for i, label in enumerate(state_labels) if label == 'bearish'][0]
+                            # Map minima dates to indices in smoothed_macd_series
+                            minima_indices = [smoothed_macd_series.index.get_loc(date) for date in minima_dates if date in smoothed_macd_series.index]
+                            # Append results with bearish state probability
+                            for idx, date in zip(minima_indices, minima_dates):
+                                minima_results.append({
+                                    'Date': date,
+                                    'Ticker': ticker,
+                                    'MACD': smoothed_macd_series.loc[date],  # Use smoothed MACD
+                                    'State_Probability': state_probs[idx, bearish_idx]
+                                })
+                        except Exception as e:
+                            print(f"Error training HMM for {ticker}: {e}")
+                            # Append minima with NaN probability
+                            for date in minima_dates:
+                                minima_results.append({
+                                    'Date': date,
+                                    'Ticker': ticker,
+                                    'MACD': smoothed_macd_series.loc[date],
+                                    'State_Probability': np.nan
+                                })
+                    else:
+                        print(f"Insufficient data for HMM training for {ticker} (<50 points).")
+                        # Append minima with NaN probability
+                        for date in minima_dates:
+                            minima_results.append({
+                                'Date': date,
+                                'Ticker': ticker,
+                                'MACD': smoothed_macd_series.loc[date],
+                                'State_Probability': np.nan
+                            })
             else:
                 print(f"{ticker}: Insufficient data for minima detection.")
         except Exception as e:
             print(f"Error finding minima for {ticker}: {e}")
+            continue
 else:
     print("No valid OHLCV or MACD data found for any ticker.")
     cleaned_data = pd.DataFrame()  # Ensure cleaned_data is an empty DataFrame if no valid data
 
-# Step 7: Save local minima for the past 1 month to a readable CSV file on the Desktop
+# Step 7: Save all local minima to a readable CSV file on the Desktop
 output_file = os.path.join(desktop_path, 'macd_minima.csv')
 try:
     # Create DataFrame from minima results
@@ -187,24 +241,30 @@ try:
         minima_df = pd.DataFrame(minima_results)
         # Sort by Date for readability
         minima_df = minima_df.sort_values(by='Date').reset_index(drop=True)
-        # Format MACD to 4 decimal places for clarity
+        # Format MACD and State_Probability to 4 decimal places for clarity
         minima_df['MACD'] = minima_df['MACD'].round(4)
+        minima_df['State_Probability'] = minima_df['State_Probability'].round(4)
         minima_df.to_csv(output_file, index=False)
-        print(f"Local minima for the past 1 month saved to {output_file}")
+        print(f"All local minima saved to {output_file}")
     else:
         # Save an empty CSV with headers if no minima are found
-        pd.DataFrame(columns=['Date', 'Ticker', 'MACD']).to_csv(output_file, index=False)
-        print(f"No minima found for the past 1 month. Empty CSV saved to {output_file}")
+        pd.DataFrame(columns=['Date', 'Ticker', 'MACD', 'State_Probability']).to_csv(output_file, index=False)
+        print(f"No minima found. Empty CSV saved to {output_file}")
 except Exception as e:
     print(f"Error saving to {output_file}: {e}")
     # Try alternative file
     alt_output_file = os.path.join(desktop_path, 'macd_minima_backup.csv')
     try:
-        minima_df.to_csv(alt_output_file, index=False) if minima_results else pd.DataFrame(columns=['Date', 'Ticker', 'MACD']).to_csv(alt_output_file, index=False)
+        minima_df.to_csv(alt_output_file, index=False) if minima_results else pd.DataFrame(columns=['Date', 'Ticker', 'MACD', 'State_Probability']).to_csv(alt_output_file, index=False)
         print(f"Local minima saved to alternative file: {alt_output_file}")
     except Exception as alt_e:
         print(f"Failed to save to {alt_output_file}: {alt_e}")
         raise ValueError("Unable to save MACD minima to CSV file.")
+
+# Calculate and print total execution time
+end_time = time.time()
+execution_time = end_time - start_time
+print(f"Total execution time: {execution_time:.2f} seconds")
 
 # The cleaned_data DataFrame is now available for further use
 # Example: print(cleaned_data.shape) to check dimensions
