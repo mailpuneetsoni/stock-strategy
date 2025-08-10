@@ -47,16 +47,23 @@ for ticker in tickers:
                 close = ohlcv_data['Close'].values
                 if len(close) >= 26:  # Ensure enough data for MACD calculation
                     macd, signal, hist = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
+                    assert len(macd) == len(ohlcv_data), f"MACD length mismatch for {ticker}: {len(macd)} != {len(ohlcv_data)}"
+                    # Smooth MACD with a rolling mean (window=5 to reduce noise)
+                    macd_series = pd.Series(macd, index=ohlcv_data.index[-len(macd):])
+                    smoothed_macd = macd_series.rolling(window=5, min_periods=1).mean().values
                     # Create DataFrame with MACD data
                     macd_data = pd.DataFrame({
                         'MACD': macd,
+                        'Smoothed_MACD': smoothed_macd,
                         'Signal': signal,
                         'Histogram': hist
                     }, index=ohlcv_data.index[-len(macd):])
                     # Combine OHLCV and MACD data
+                    original_len = len(ohlcv_data)
                     ohlcv_data = ohlcv_data.join(macd_data, how='inner')  # Keep only rows with valid MACD
+                    assert len(ohlcv_data) == original_len, f"Data loss in join for {ticker}: {len(ohlcv_data)} != {original_len}"
                     # Add to cleaned_data with multi-level columns
-                    ohlcv_data.columns = pd.MultiIndex.from_product([[ticker], required_columns + ['MACD', 'Signal', 'Histogram']])
+                    ohlcv_data.columns = pd.MultiIndex.from_product([[ticker], required_columns + ['MACD', 'Smoothed_MACD', 'Signal', 'Histogram']])
                     cleaned_data = pd.concat([cleaned_data, ohlcv_data], axis=1)
                 else:
                     print(f"Insufficient data for {ticker} to compute MACD (need at least 26 periods).")
@@ -74,7 +81,7 @@ def find_local_minima(series, base_order=5, std_factor=0.5, min_gap=5, require_m
     Find robust local minima in a series.
     
     Parameters:
-    - series (pd.Series): Time series data (e.g., MACD).
+    - series (pd.Series): Time series data (e.g., Smoothed_MACD).
     - base_order (int): Base lookback for minima detection.
     - std_factor (float): How far below rolling mean a minima must be (in std dev units).
     - min_gap (int): Minimum number of bars between two minima.
@@ -125,19 +132,19 @@ minima_results = []
 if not cleaned_data.empty:
     for ticker in cleaned_data.columns.get_level_values(0).unique():
         try:
-            # Use raw MACD for minima detection and HMM
-            macd_series = cleaned_data[(ticker, 'MACD')].dropna()
-            if len(macd_series) > 2:  # Need at least 3 points for minima
-                # Find all minima on MACD (without requiring negative values to capture broader extremes)
-                minima_dates = find_local_minima(macd_series, base_order=5, std_factor=0.5, min_gap=5, require_macd_negative=False)
+            # Use smoothed MACD for minima detection and HMM
+            smoothed_macd_series = cleaned_data[(ticker, 'Smoothed_MACD')].dropna()
+            if len(smoothed_macd_series) > 2:  # Need at least 3 points for minima
+                # Find all minima on smoothed MACD (without requiring negative values)
+                minima_dates = find_local_minima(smoothed_macd_series, base_order=5, std_factor=0.5, min_gap=5, require_macd_negative=False)
                 if not minima_dates:
                     print(f"{ticker}: No minima found.")
                     continue
                 # Only train HMM if minima are found and sufficient data exists
-                if len(macd_series) >= 50:  # Minimum data points for HMM
+                if len(smoothed_macd_series) >= 50:  # Minimum data points for HMM
                     try:
                         # Prepare data for HMM (2D array for hmmlearn)
-                        X = macd_series.values.reshape(-1, 1)
+                        X = smoothed_macd_series.values.reshape(-1, 1)
                         # Initialize and fit Gaussian HMM with 2 states
                         hmm_model = hmmlearn.hmm.GaussianHMM(
                             n_components=2,
@@ -157,14 +164,14 @@ if not cleaned_data.empty:
                         state_labels[sorted_indices[1]] = 'bullish'  # Highest mean
                         # Find bearish state index for buy signals (reversal logic: buy at bearish extremes)
                         bearish_idx = [i for i, label in enumerate(state_labels) if label == 'bearish'][0]
-                        # Map minima dates to indices in macd_series
-                        minima_indices = [macd_series.index.get_loc(date) for date in minima_dates if date in macd_series.index]
+                        # Map minima dates to indices in smoothed_macd_series
+                        minima_indices = [smoothed_macd_series.index.get_loc(date) for date in minima_dates if date in smoothed_macd_series.index]
                         # Append results with bearish state probability (higher = stronger buy signal)
                         for idx, date in zip(minima_indices, minima_dates):
                             minima_results.append({
                                 'Date': date,
                                 'Ticker': ticker,
-                                'MACD': macd_series.loc[date],  # Use raw MACD
+                                'MACD': smoothed_macd_series.loc[date],  # Use smoothed MACD
                                 'Bearish_State_Probability': state_probs[idx, bearish_idx]  # Probability of bearish state
                             })
                     except Exception as e:
@@ -174,7 +181,7 @@ if not cleaned_data.empty:
                             minima_results.append({
                                 'Date': date,
                                 'Ticker': ticker,
-                                'MACD': macd_series.loc[date],
+                                'MACD': smoothed_macd_series.loc[date],
                                 'Bearish_State_Probability': np.nan
                             })
                 else:
@@ -184,7 +191,7 @@ if not cleaned_data.empty:
                         minima_results.append({
                             'Date': date,
                             'Ticker': ticker,
-                            'MACD': macd_series.loc[date],
+                            'MACD': smoothed_macd_series.loc[date],
                             'Bearish_State_Probability': np.nan
                         })
             else:
