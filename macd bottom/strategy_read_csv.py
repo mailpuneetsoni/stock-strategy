@@ -144,16 +144,57 @@ for ticker in tickers:
         print(f"Error processing {ticker}: {e}")
         continue
 
-# Step 6: Find local minima of the smoothed MACD line for each ticker and compute HMM probabilities
-def find_local_minima(series, order=1):
+def find_local_minima(series, base_order=5, std_factor=0.5, min_gap=5, require_macd_negative=True):
     """
-    Find local minima in a series using scipy's argrelextrema.
-    - series: A pandas Series with a DatetimeIndex.
-    - order: How many points on each side to use for comparison.
-    Returns the indices (dates) of the local minima.
+    Find robust local minima in a series.
+    
+    Parameters:
+    - series (pd.Series): Time series data (e.g., Smoothed MACD).
+    - base_order (int): Base lookback for minima detection.
+    - std_factor (float): How far below rolling mean a minima must be (in std dev units).
+    - min_gap (int): Minimum number of bars between two minima.
+    - require_macd_negative (bool): If True, keep only minima where value < 0.
+    
+    Returns:
+    - List of minima dates.
     """
+    if series.empty or len(series) < base_order * 2:
+        return []
+
+    # Dynamic order scaling with data length
+    order = max(base_order, len(series) // 50)
+
+    # Step 1: Find raw minima
     minima_indices = argrelextrema(series.values, np.less, order=order)[0]
-    return series.index[minima_indices]
+    minima_dates = series.index[minima_indices]
+
+    if minima_dates.empty:
+        return []
+
+    # Step 2: Magnitude filtering (only significant dips)
+    rolling_mean = series.rolling(20, min_periods=5).mean()
+    rolling_std = series.rolling(20, min_periods=5).std()
+    valid_minima = [
+        d for d in minima_dates
+        if series.loc[d] < (rolling_mean.loc[d] - std_factor * rolling_std.loc[d])
+    ]
+
+    # Step 3: Require MACD < 0 (bullish reversal filter)
+    if require_macd_negative:
+        valid_minima = [d for d in valid_minima if series.loc[d] < 0]
+
+    # Step 4: Merge nearby minima, keep the deepest
+    filtered_minima = []
+    for date in valid_minima:
+        if not filtered_minima or (date - filtered_minima[-1]).days > min_gap:
+            filtered_minima.append(date)
+        else:
+            # Replace with deeper minima
+            if series.loc[date] < series.loc[filtered_minima[-1]]:
+                filtered_minima[-1] = date
+
+    return filtered_minima
+
 
 # Initialize a list to store minima for all tickers
 minima_results = []
@@ -164,16 +205,16 @@ if not cleaned_data.empty:
             smoothed_macd_series = cleaned_data[(ticker, 'Smoothed_MACD')].dropna()
             if len(smoothed_macd_series) > 2:  # Need at least 3 points for minima
                 # Find all minima on smoothed MACD
-                minima_dates = find_local_minima(smoothed_macd_series, order=1)
+                minima_dates = find_local_minima(smoothed_macd_series, order=5)
                 if not minima_dates.empty:
                     # Only train HMM if minima are found and sufficient data exists
                     if len(smoothed_macd_series) >= 50:  # Minimum data points for HMM
                         try:
                             # Prepare data for HMM (2D array for hmmlearn)
                             X = smoothed_macd_series.values.reshape(-1, 1)
-                            # Initialize and fit Gaussian HMM with 4 states
+                            # Initialize and fit Gaussian HMM with 2 states
                             hmm_model = hmmlearn.hmm.GaussianHMM(
-                                n_components=4,
+                                n_components=2,
                                 covariance_type='diag',
                                 n_iter=100,
                                 tol=1e-4,
@@ -184,25 +225,21 @@ if not cleaned_data.empty:
                             state_probs = hmm_model.predict_proba(X)
                             # Get state means and assign labels
                             state_means = hmm_model.means_.flatten()
-                            state_labels = [''] * 4
+                            state_labels = [''] * 2
                             sorted_indices = np.argsort(state_means)
                             state_labels[sorted_indices[0]] = 'bearish'  # Lowest mean
-                            state_labels[sorted_indices[3]] = 'bullish'  # Highest mean
-                            state_labels[sorted_indices[2]] = 'trend reversal'  # Second-highest
-                            # Find state closest to zero mean
-                            zero_diff = np.abs(state_means)
-                            state_labels[np.argmin(zero_diff)] = 'consolidation'
-                            # Find bearish state index
-                            bearish_idx = [i for i, label in enumerate(state_labels) if label == 'bearish'][0]
+                            state_labels[sorted_indices[1]] = 'bullish'  # Highest mean
+                            # Find bullish state index
+                            bullish_idx = [i for i, label in enumerate(state_labels) if label == 'bullish'][0]
                             # Map minima dates to indices in smoothed_macd_series
                             minima_indices = [smoothed_macd_series.index.get_loc(date) for date in minima_dates if date in smoothed_macd_series.index]
-                            # Append results with bearish state probability
+                            # Append results with bullish state probability
                             for idx, date in zip(minima_indices, minima_dates):
                                 minima_results.append({
                                     'Date': date,
                                     'Ticker': ticker,
                                     'MACD': smoothed_macd_series.loc[date],  # Use smoothed MACD
-                                    'State_Probability': state_probs[idx, bearish_idx]
+                                    'Bullish_State_Probability': state_probs[idx, bullish_idx]
                                 })
                         except Exception as e:
                             print(f"Error training HMM for {ticker}: {e}")
@@ -212,7 +249,7 @@ if not cleaned_data.empty:
                                     'Date': date,
                                     'Ticker': ticker,
                                     'MACD': smoothed_macd_series.loc[date],
-                                    'State_Probability': np.nan
+                                    'Bullish_State_Probability': np.nan
                                 })
                     else:
                         print(f"Insufficient data for HMM training for {ticker} (<50 points).")
@@ -222,7 +259,7 @@ if not cleaned_data.empty:
                                 'Date': date,
                                 'Ticker': ticker,
                                 'MACD': smoothed_macd_series.loc[date],
-                                'State_Probability': np.nan
+                                'Bullish_State_Probability': np.nan
                             })
             else:
                 print(f"{ticker}: Insufficient data for minima detection.")
@@ -241,21 +278,21 @@ try:
         minima_df = pd.DataFrame(minima_results)
         # Sort by Date for readability
         minima_df = minima_df.sort_values(by='Date').reset_index(drop=True)
-        # Format MACD and State_Probability to 4 decimal places for clarity
+        # Format MACD and Bullish_State_Probability to 4 decimal places for clarity
         minima_df['MACD'] = minima_df['MACD'].round(4)
-        minima_df['State_Probability'] = minima_df['State_Probability'].round(4)
+        minima_df['Bullish_State_Probability'] = minima_df['Bullish_State_Probability'].round(4)
         minima_df.to_csv(output_file, index=False)
         print(f"All local minima saved to {output_file}")
     else:
         # Save an empty CSV with headers if no minima are found
-        pd.DataFrame(columns=['Date', 'Ticker', 'MACD', 'State_Probability']).to_csv(output_file, index=False)
+        pd.DataFrame(columns=['Date', 'Ticker', 'MACD', 'Bullish_State_Probability']).to_csv(output_file, index=False)
         print(f"No minima found. Empty CSV saved to {output_file}")
 except Exception as e:
     print(f"Error saving to {output_file}: {e}")
     # Try alternative file
     alt_output_file = os.path.join(desktop_path, 'macd_minima_backup.csv')
     try:
-        minima_df.to_csv(alt_output_file, index=False) if minima_results else pd.DataFrame(columns=['Date', 'Ticker', 'MACD', 'State_Probability']).to_csv(alt_output_file, index=False)
+        minima_df.to_csv(alt_output_file, index=False) if minima_results else pd.DataFrame(columns=['Date', 'Ticker', 'MACD', 'Bullish_State_Probability']).to_csv(alt_output_file, index=False)
         print(f"Local minima saved to alternative file: {alt_output_file}")
     except Exception as alt_e:
         print(f"Failed to save to {alt_output_file}: {alt_e}")
