@@ -7,6 +7,10 @@ from scipy.stats import linregress
 
 start_time = time.time()
 
+# Function to smooth MACD line with a moving average
+def smooth_macd(macd_series, window=5):
+    return macd_series.rolling(window=window, min_periods=1).mean()
+
 # Step 1: Define the path to stock_data.csv on the Desktop
 desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
 file_path = os.path.join(desktop_path, 'stock_data.csv')
@@ -27,7 +31,7 @@ tickers = data.columns.get_level_values(0).unique()
 if not tickers.size:
     raise ValueError("No tickers found in the data.")
 
-# Step 4: Clean the data and compute MACD
+# Step 4: Clean the data and compute MACD, Smoothed MACD, MACD Slope, and MACD Bottom
 required_columns = ['Close']  # Only need Close for MACD
 cleaned_data = pd.DataFrame()
 for ticker in tickers:
@@ -37,19 +41,36 @@ for ticker in tickers:
             ohlcv_data = data[ticker][required_columns].copy()
             ohlcv_data = ohlcv_data.apply(lambda x: pd.to_numeric(x, errors='coerce')).dropna()
             if not ohlcv_data.empty:
-                close = ohlcv_data['Close'].values
+                close = ohlcv_data['Close'].values            
                 if len(close) >= 26:  # Minimum for MACD calculation
                     # Calculate MACD
                     macd, signal, hist = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
                     macd_series = pd.Series(macd, index=ohlcv_data.index[-len(macd):])
+                    # Smooth MACD
+                    smoothed_macd = smooth_macd(macd_series, window=5)
+                    # Calculate MACD slope
+                    macd_slope = np.gradient(smoothed_macd.values)
+                    # Detect MACD bottoms (slope changes from negative to positive with MACD < 0)
+                    macd_bottom = np.zeros(len(macd), dtype=int)
+                    for i in range(1, len(macd_slope)):
+                        if macd_slope[i-1] < 0 and macd_slope[i] >= 0 and macd[i] < 0:
+                            macd_bottom[i] = 1
                     min_len = min(len(macd), len(ohlcv_data))
                     # Create DataFrame
                     ticker_data = pd.DataFrame({
                         'Close': ohlcv_data['Close'].values[-min_len:],
-                        'MACD': macd_series.values[-min_len:]
+                        'MACD': macd_series.values[-min_len:],
+                        'Smoothed_MACD': smoothed_macd.values[-min_len:],
+                        'MACD_Slope': macd_slope[-min_len:],
+                        'MACD_Bottom': macd_bottom[-min_len:]
                     }, index=ohlcv_data.index[-min_len:])
-                    ticker_data['Ticker'] = ticker
-                    cleaned_data = pd.concat([cleaned_data, ticker_data], axis=0)
+                    # Filter for MACD_Bottom = 1
+                    ticker_data = ticker_data[ticker_data['MACD_Bottom'] == 1]
+                    if not ticker_data.empty:
+                        ticker_data['Ticker'] = ticker
+                        cleaned_data = pd.concat([cleaned_data, ticker_data], axis=0)
+                    else:
+                        print(f"No MACD bottoms for {ticker}.")
                 else:
                     print(f"Insufficient data for {ticker} to compute MACD (need at least 26 periods).")
             else:
@@ -65,15 +86,15 @@ for ticker in tickers:
 if not cleaned_data.empty:
     cleaned_data = cleaned_data.sort_index(ascending=True)
 else:
-    print("Warning: No data found after processing.")
+    print("Warning: No MACD bottoms found after processing.")
 
 # Step 6: Save the sorted data to a CSV file
 output_file_path = os.path.join(desktop_path, 'cleaned_stock_data.csv')
 try:
     if not cleaned_data.empty:
-        cleaned_data.reset_index().rename(columns={'index': 'Date'})[['Date', 'Ticker', 'Close', 'MACD']].to_csv(output_file_path, index=False)
+        cleaned_data.reset_index().rename(columns={'index': 'Date'})[['Date', 'Ticker', 'Close', 'MACD', 'Smoothed_MACD', 'MACD_Slope', 'MACD_Bottom']].to_csv(output_file_path, index=False)
     else:
-        pd.DataFrame(columns=['Date', 'Ticker', 'Close', 'MACD']).to_csv(output_file_path, index=False)
+        pd.DataFrame(columns=['Date', 'Ticker', 'Close', 'MACD', 'Smoothed_MACD', 'MACD_Slope', 'MACD_Bottom']).to_csv(output_file_path, index=False)
     print(f"Sorted data saved to {output_file_path}")
 except Exception as e:
     print(f"Error saving data to {output_file_path}: {e}")
