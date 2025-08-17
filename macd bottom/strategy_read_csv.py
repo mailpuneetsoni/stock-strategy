@@ -2,8 +2,8 @@ import pandas as pd
 import numpy as np
 import os
 import talib
-from scipy.signal import argrelextrema
 import time
+from scipy.stats import linregress
 
 start_time = time.time()
 
@@ -11,7 +11,7 @@ start_time = time.time()
 desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
 file_path = os.path.join(desktop_path, 'stock_data.csv')
 
-# Step 2: Read the CSV file with error handling and compute time range
+# Step 2: Read the CSV file with error handling
 try:
     data = pd.read_csv(file_path, header=[0, 1], index_col=0, parse_dates=True)
     print(f"Data successfully loaded from {file_path}")
@@ -27,8 +27,8 @@ tickers = data.columns.get_level_values(0).unique()
 if not tickers.size:
     raise ValueError("No tickers found in the data.")
 
-# Step 4: Clean the data and compute MACD, RSI, SMAs, and Volume Average
-required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+# Step 4: Clean the data and compute MACD and RSI
+required_columns = ['Close']  # Only need Close for MACD and RSI
 cleaned_data = pd.DataFrame()
 for ticker in tickers:
     try:
@@ -38,35 +38,27 @@ for ticker in tickers:
             ohlcv_data = ohlcv_data.apply(lambda x: pd.to_numeric(x, errors='coerce')).dropna()
             if not ohlcv_data.empty:
                 close = ohlcv_data['Close'].values
-                volume = ohlcv_data['Volume'].values
-                if len(close) >= 200:
+                if len(close) >= 26:  # Minimum for MACD calculation
+                    # Calculate MACD
                     macd, signal, hist = talib.MACD(close, fastperiod=12, slowperiod=26, signalperiod=9)
                     macd_series = pd.Series(macd, index=ohlcv_data.index[-len(macd):])
-                    smoothed_macd = macd_series.rolling(window=5, min_periods=1).mean().values
+                    smoothed_macd = macd_series.rolling(window=5, min_periods=1).mean()
+                    # Calculate RSI
                     rsi = talib.RSI(close, timeperiod=14)
-                    sma_50 = talib.SMA(close, timeperiod=50)
-                    sma_200 = talib.SMA(close, timeperiod=200)
-                    volume_avg = talib.SMA(volume, timeperiod=20)
-                    min_len = min(len(macd), len(rsi), len(sma_50), len(sma_200), len(volume_avg), len(ohlcv_data))
-                    macd_data = pd.DataFrame({
-                        'MACD': macd[-min_len:],
-                        'Smoothed_MACD': smoothed_macd[-min_len:],
-                        'Signal': signal[-min_len:],
-                        'Histogram': hist[-min_len:],
-                        'RSI': rsi[-min_len:],
-                        'SMA_50': sma_50[-min_len:],
-                        'SMA_200': sma_200[-min_len:],
-                        'Volume_Avg': volume_avg[-min_len:]
+                    min_len = min(len(macd), len(smoothed_macd), len(rsi), len(ohlcv_data))
+                    # Create simplified DataFrame with single-level columns
+                    ticker_data = pd.DataFrame({
+                        f'{ticker}_Close': ohlcv_data['Close'].values[-min_len:],
+                        f'{ticker}_MACD': macd[-min_len:],
+                        f'{ticker}_Smoothed_MACD': smoothed_macd.values[-min_len:],
+                        f'{ticker}_Signal': signal[-min_len:],
+                        f'{ticker}_RSI': rsi[-min_len:]
                     }, index=ohlcv_data.index[-min_len:])
-                    ohlcv_data = ohlcv_data.join(macd_data, how='inner')
-                    ohlcv_data.columns = pd.MultiIndex.from_product([[ticker], required_columns + 
-                                                                    ['MACD', 'Smoothed_MACD', 'Signal', 'Histogram', 
-                                                                     'RSI', 'SMA_50', 'SMA_200', 'Volume_Avg']])
-                    cleaned_data = pd.concat([cleaned_data, ohlcv_data], axis=1)
+                    cleaned_data = pd.concat([cleaned_data, ticker_data], axis=1)
                 else:
-                    print(f"Insufficient data for {ticker} to compute indicators (need at least 200 periods).")
+                    print(f"Insufficient data for {ticker} to compute indicators (need at least 26 periods).")
             else:
-                print(f"No valid OHLCV data for {ticker} after cleaning.")
+                print(f"No valid Close data for {ticker} after cleaning.")
         else:
             missing_columns = [col for col in ticker_columns if not col in data.columns]
             print(f"Skipping {ticker}: Missing columns {missing_columns}")
@@ -74,44 +66,15 @@ for ticker in tickers:
         print(f"Error processing {ticker}: {e}")
         continue
 
-# Step 5: Find local minima with RSI and Volume filters
-def find_local_minima(series, data_df, ticker, base_order=5, std_factor=0.5, min_gap=3, 
-                      require_macd_negative=False, rsi_threshold=30, volume_multiplier=1.5, rolling_window=20):
-    if series.empty or len(series) < base_order * 2:
-        return []
+# Step 5: Save the cleaned data to a CSV file with Date as a column
+output_file_path = os.path.join(desktop_path, 'cleaned_stock_data.csv')
+try:
+    cleaned_data.reset_index().rename(columns={'index': 'Date'}).to_csv(output_file_path, index=False)
+    print(f"Cleaned data saved to {output_file_path}")
+except Exception as e:
+    print(f"Error saving cleaned data to {output_file_path}: {e}")
 
-    order = max(base_order, len(series) // 50)
-    minima_indices = argrelextrema(series.values, np.less, order=order)[0]
-    minima_dates = series.index[minima_indices]
-
-    if minima_dates.empty:
-        return []
-
-    rolling_mean = series.rolling(window=rolling_window, min_periods=5).mean()
-    rolling_std = series.rolling(window=rolling_window, min_periods=5).std()
-    valid_minima = [
-        d for d in minima_dates
-        if series.loc[d] < (rolling_mean.loc[d] - std_factor * rolling_std.loc[d])
-    ]
-
-    if require_macd_negative:
-        valid_minima = [d for d in valid_minima if series.loc[d] < 0]
-
-    filtered_minima = []
-    for d in valid_minima:
-        rsi_val = data_df[(ticker, 'RSI')].loc[d]
-        volume_val = data_df[(ticker, 'Volume')].loc[d]
-        volume_avg_val = data_df[(ticker, 'Volume_Avg')].loc[d]
-        if rsi_val < rsi_threshold and volume_val > (volume_multiplier * volume_avg_val):
-            if not filtered_minima or (d - filtered_minima[-1]).days > min_gap:
-                filtered_minima.append(d)
-            else:
-                if series.loc[d] < series.loc[filtered_minima[-1]]:
-                    filtered_minima[-1] = d
-
-    return filtered_minima
-
-# Step 9: Calculate and print total execution time
+# Step 6: Calculate and print total execution time
 end_time = time.time()
 execution_time = end_time - start_time
 print(f"Total execution time: {execution_time:.2f} seconds")
