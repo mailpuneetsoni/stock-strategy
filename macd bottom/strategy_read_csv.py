@@ -50,11 +50,12 @@ for ticker in tickers:
                     minima_indices = argrelextrema(macd, np.less, order=3)[0]
                     macd_bottom = np.zeros(len(macd), dtype=int)
                     for i in minima_indices:
-                        # Check for crossover within 3 days after
-                        for j in range(i, min(i + 4, len(macd))):
-                            if macd[j] > signal[j]:
-                                macd_bottom[i] = 1
-                                break
+                        if macd[i] < 0:  # Negative MACD
+                            # Check for crossover within 3 days after
+                            for j in range(i, min(i + 4, len(macd))):
+                                if macd[j] > signal[j]:
+                                    macd_bottom[i] = 1
+                                    break
                     min_len = min(len(macd), len(rsi), len(ohlcv_data))
                     # Create DataFrame with RSI < 30 filter
                     ticker_data = pd.DataFrame({
