@@ -4,6 +4,7 @@ import os
 import talib
 import time
 from scipy.stats import linregress
+from scipy.signal import argrelextrema
 
 start_time = time.time()
 
@@ -27,7 +28,7 @@ tickers = data.columns.get_level_values(0).unique()
 if not tickers.size:
     raise ValueError("No tickers found in the data.")
 
-# Step 4: Clean the data and compute MACD High
+# Step 4: Clean the data and compute MACD High, MACD Bottom, and Entry Signal
 required_columns = ['Close']  # Only need Close for MACD
 cleaned_data = pd.DataFrame()
 for ticker in tickers:
@@ -45,14 +46,31 @@ for ticker in tickers:
                     # Calculate MACD mean and standard deviation (7-day window)
                     macd_mean = macd_series.rolling(window=7, center=True, min_periods=1).mean()
                     macd_std = macd_series.rolling(window=7, center=True, min_periods=1).std()
+                    std_threshold = macd_std.median()  # Dynamic threshold for low volatility
                     # Detect MACD high (MACD > mean + 1 std)
                     macd_high = (macd_series > (macd_mean + macd_std)).astype(int)
+                    # Detect MACD bottoms (local minima with MACD > 0)
+                    minima_indices = argrelextrema(macd, np.less, order=3)[0]
+                    macd_bottom = np.zeros(len(macd), dtype=int)
+                    for i in minima_indices:
+                        if macd[i] > 0:  # Positive MACD
+                            macd_bottom[i] = 1
+                    # Detect entry signal (MACD_Bottom = 1, MACD_Std < median, followed by MACD_High = 1 within 2 days)
+                    entry_signal = np.zeros(len(macd), dtype=int)
+                    for i in minima_indices:
+                        if macd_bottom[i] == 1 and macd_std.iloc[i] < std_threshold:
+                            for j in range(i, min(i + 3, len(macd))):  # Check within 2 days
+                                if macd_high[j] == 1:
+                                    entry_signal[j] = 1
+                                    break
                     min_len = min(len(macd), len(macd_std), len(ohlcv_data))
                     # Create DataFrame
                     ticker_data = pd.DataFrame({
                         'Close': ohlcv_data['Close'].values[-min_len:],
                         'MACD_High': macd_high.values[-min_len:],
-                        'MACD_Std': macd_std.values[-min_len:]
+                        'MACD_Bottom': macd_bottom[-min_len:],
+                        'MACD_Std': macd_std.values[-min_len:],
+                        'Entry_Signal': entry_signal[-min_len:]
                     }, index=ohlcv_data.index[-min_len:])
                     ticker_data['Ticker'] = ticker
                     cleaned_data = pd.concat([cleaned_data, ticker_data], axis=0)
@@ -77,9 +95,9 @@ else:
 output_file_path = os.path.join(desktop_path, 'cleaned_stock_data.csv')
 try:
     if not cleaned_data.empty:
-        cleaned_data.reset_index().rename(columns={'index': 'Date'})[['Date', 'Ticker', 'Close', 'MACD_High', 'MACD_Std']].to_csv(output_file_path, index=False)
+        cleaned_data.reset_index().rename(columns={'index': 'Date'})[['Date', 'Ticker', 'Close', 'MACD_High', 'MACD_Bottom', 'MACD_Std', 'Entry_Signal']].to_csv(output_file_path, index=False)
     else:
-        pd.DataFrame(columns=['Date', 'Ticker', 'Close', 'MACD_High', 'MACD_Std']).to_csv(output_file_path, index=False)
+        pd.DataFrame(columns=['Date', 'Ticker', 'Close', 'MACD_High', 'MACD_Bottom', 'MACD_Std', 'Entry_Signal']).to_csv(output_file_path, index=False)
     print(f"Sorted data saved to {output_file_path}")
 except Exception as e:
     print(f"Error saving data to {output_file_path}: {e}")
