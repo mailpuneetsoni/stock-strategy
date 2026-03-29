@@ -1,16 +1,14 @@
 import pandas as pd
 import numpy as np
-import talib as ta
 import os
 
 # -----------------------------
 # CONFIG
 # -----------------------------
-
-MARKET_CAP_THRESHOLD = 1e10  # ₹1000 Cr
+MARKET_CAP_THRESHOLD = 1e10
 desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
-CSV_FILE = os.path.join(desktop_path, 'stock_data.csv')
-OUTPUT_FILE = os.path.join(desktop_path, 'monthly_close.csv')
+CSV_FILE     = os.path.join(desktop_path, 'stock_data.csv')
+OUTPUT_FILE  = os.path.join(desktop_path, 'monthly_close.csv')
 
 # -----------------------------
 # LOAD CSV
@@ -30,32 +28,34 @@ def compute_indicators(df):
     df["STD200"] = df["Close"].rolling(200).std()
     df["ZScore"] = (df["Close"] - df["SMA200"]) / df["STD200"]
     df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
-    df["SMA50"] = df["Close"].rolling(50).mean()
+    df["SMA50"]  = df["Close"].rolling(50).mean()
     return df
 
-
 # -----------------------------
-# CALCULATE MONTHLY CLOSE
+# CALCULATE ZSCORE
 # -----------------------------
-monthly_data = []
+data = []
 
 for ticker in tickers:
     try:
         df = get_ticker_df(ticker)
-
         if df.empty:
             continue
 
-        # Resample to monthly and take last close of each month
-        monthly_close = df["Close"].resample("M").last()
+        # Compute daily indicators (ZScore is daily)
+        df = compute_indicators(df)
+
+        # Resample both Close and ZScore to month-end (last value of each month)
+       # monthly_close  = df["Close"].resample("M").last()
+        zscore = df["ZScore"] # 
 
         temp_df = pd.DataFrame({
-            "Date": monthly_close.index,
-            "Ticker": ticker,
-            "Monthly_Close": monthly_close.values
+            "Date":          zscore.index,
+            "Ticker":        ticker,
+            "ZScore":        zscore.round(2).values,
         })
 
-        monthly_data.append(temp_df)
+        data.append(temp_df)
 
     except Exception as e:
         print(f"Error processing {ticker}: {e}")
@@ -63,9 +63,12 @@ for ticker in tickers:
 # -----------------------------
 # SAVE TO CSV
 # -----------------------------
-if monthly_data:
-    final_df = pd.concat(monthly_data, ignore_index=True)
+if data:
+    final_df = pd.concat(data, ignore_index=True)
+    final_df = final_df.sort_values(["Date", "Ticker"]).reset_index(drop=True)
     final_df.to_csv(OUTPUT_FILE, index=False)
-    print(f"Monthly close saved to {OUTPUT_FILE}")
+    print(f"Saved to {OUTPUT_FILE}")
+    print(f"Shape: {final_df.shape}")
+    print(final_df.tail(10))
 else:
     print("No data to save.")
