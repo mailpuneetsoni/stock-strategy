@@ -28,12 +28,12 @@ def compute_indicators(df):
     df["STD200"] = df["Close"].rolling(200).std()
     df["ZScore"] = (df["Close"] - df["SMA200"]) / df["STD200"]
     df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
-    df["SMA50"]  = df["Close"].rolling(50).mean()
     return df
 
 # -----------------------------
 # CALCULATE ZSCORE
 # -----------------------------
+
 data = []
 
 for ticker in tickers:
@@ -45,8 +45,11 @@ for ticker in tickers:
         # Compute daily indicators (ZScore is daily)
         df = compute_indicators(df)
 
-        # Resample both Close and ZScore to month-end (last value of each month)
-       # monthly_close  = df["Close"].resample("M").last()
+        df = df[df["ZScore"] <= -1.4]
+        
+        
+
+
         zscore = df["ZScore"] # 
 
         temp_df = pd.DataFrame({
