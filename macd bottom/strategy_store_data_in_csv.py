@@ -23,7 +23,7 @@ tickers = [symbol + '.NS' for symbol in equity_df['SYMBOL'].tolist()]
 # Step 2: Retrieve weekly historical data for the last 25 years using yfinance bulk download
 # Dates: From 2000-08-06 to 2025-08-06, with interval='1wk' for weekly data
 try:
-    data = yf.download(tickers, start='2010-08-06', end='2025-11-23', interval='1d', group_by='ticker', threads=True, progress=True)
+    data = yf.download(tickers, start='2020-08-06', end='2026-03-28', interval='1d', group_by='ticker', threads=True, progress=True)
     
     # If bulk download fails, fall back to individual downloads
 except Exception as e:
@@ -31,7 +31,7 @@ except Exception as e:
     data_dict = {}
     for ticker in tqdm(tickers):
         try:
-            data_dict[ticker] = yf.download(ticker, start='2000-08-06', end='2025-08-06', interval='1wk', progress=False)
+            data_dict[ticker] = yf.download(ticker, start='2000-08-06', end='2026-3-28', interval='1wk', progress=False)
         except Exception as ticker_error:
             print(f"Error retrieving data for {ticker}: {ticker_error}. Skipping.")
             continue
