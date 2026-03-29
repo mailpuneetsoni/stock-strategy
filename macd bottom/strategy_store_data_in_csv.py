@@ -5,17 +5,17 @@ import os
 
 # Step 1: Read the tickers from EQUITY_L.csv located on the Desktop
 desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
-equity_file = os.path.join(desktop_path, 'EQUITY_L.csv')
+equity_file = os.path.join(desktop_path, 'equity_500.csv')
 
 # Check if the file exists
 if not os.path.exists(equity_file):
-    raise FileNotFoundError(f"Could not find EQUITY_L.csv at {equity_file}")
+    raise FileNotFoundError(f"Could not find equity_500.csv at {equity_file}")
 
 # Read the CSV, assuming it has a column named 'SYMBOL' for ticker symbols
 try:
     equity_df = pd.read_csv(equity_file)
 except Exception as e:
-    raise ValueError(f"Failed to read EQUITY_L.csv: {e}")
+    raise ValueError(f"Failed to read equity_500.csv: {e}")
 
 # Extract tickers (add '.NS' suffix for NSE tickers as required by yfinance)
 tickers = [symbol + '.NS' for symbol in equity_df['SYMBOL'].tolist()]
@@ -23,7 +23,7 @@ tickers = [symbol + '.NS' for symbol in equity_df['SYMBOL'].tolist()]
 # Step 2: Retrieve weekly historical data for the last 25 years using yfinance bulk download
 # Dates: From 2000-08-06 to 2025-08-06, with interval='1wk' for weekly data
 try:
-    data = yf.download(tickers, start='2000-08-06', end='2025-08-06', interval='1wk', group_by='ticker', threads=True, progress=True)
+    data = yf.download(tickers, start='2010-08-06', end='2025-11-23', interval='1d', group_by='ticker', threads=True, progress=True)
     
     # If bulk download fails, fall back to individual downloads
 except Exception as e:
