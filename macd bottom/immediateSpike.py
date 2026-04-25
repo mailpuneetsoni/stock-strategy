@@ -5,7 +5,6 @@ import os
 # -----------------------------
 # CONFIG
 # -----------------------------
-MARKET_CAP_THRESHOLD = 1e10
 desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
 CSV_FILE     = os.path.join(desktop_path, 'stock_data.csv')
 OUTPUT_FILE  = os.path.join(desktop_path, 'monthly_close.csv')
@@ -27,13 +26,33 @@ def compute_indicators(df):
     df["SMA200"] = df["Close"].rolling(200).mean()
     df["STD200"] = df["Close"].rolling(200).std()
     df["ZScore"] = (df["Close"] - df["SMA200"]) / df["STD200"]
-    df["EMA200"] = df["Close"].ewm(span=200, adjust=False).mean()
+    df["EMA100"] = df["Close"].ewm(span=100, adjust=False).mean()
     return df
 
-# -----------------------------
-# CALCULATE ZSCORE
-# -----------------------------
+#def get_monthly_close_above_ema(df):
+    # Get last Close and EMA100 of each month
+ #   monthly_close = df["Close"].resample("M").last()
+ #   monthly_benchmark = (monthly_close * 0.9)
+  #  daily_benchmark = monthly_benchmark.reindex(df.index, method="ffill")
+  #  flag = (daily_benchmark > df["EMA100"]).map({True: "Yes", False: "No"})
+  #  return flag
 
+
+def get_monthly_close_above_ema(df):
+    # Get last Close and EMA100 of each month
+    monthly_close = df["Close"].resample("M").last()
+    monthly_ema   = df["EMA100"].resample("M").last()
+    # Compare: is monthly close > monthly EMA100?
+    monthly_benchmark = (monthly_close * 0.9)
+    monthly_flag  = (monthly_benchmark > monthly_ema).map({True: "Yes", False: "No"})
+    # Reindex back to daily index (forward-fill so every day in a month carries that month's verdict)
+    daily_flag = monthly_flag.reindex(df.index, method="ffill")
+    return daily_flag 
+
+
+# -----------------------------
+# CALCULATE ZSCORE + EMA FILTER
+# -----------------------------
 data = []
 
 for ticker in tickers:
@@ -42,20 +61,25 @@ for ticker in tickers:
         if df.empty:
             continue
 
-        # Compute daily indicators (ZScore is daily)
+        # Compute daily indicators
         df = compute_indicators(df)
 
-        df = df[df["ZScore"] <= -1.4]
-        
-        
+        # Add monthly close vs EMA200 column
+        df["Above_EMA100"] = get_monthly_close_above_ema(df)
 
+        # Filter: only keep rows where ZScore <= -1.4
+        df_filtered = df[df["ZScore"] <= -1.4]
 
-        zscore = df["ZScore"] # 
+        if df_filtered.empty:
+            continue
 
         temp_df = pd.DataFrame({
-            "Date":          zscore.index,
-            "Ticker":        ticker,
-            "ZScore":        zscore.round(2).values,
+            "Date":        df_filtered.index,
+            "Ticker":      ticker,
+            "Close":       df_filtered["Close"].round(2).values,
+            "EMA100":      df_filtered["EMA100"].round(2).values,
+            "ZScore":      df_filtered["ZScore"].round(2).values,
+            "Above_EMA100": df_filtered["Above_EMA100"].values,
         })
 
         data.append(temp_df)
