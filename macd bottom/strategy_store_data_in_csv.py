@@ -24,9 +24,8 @@ tickers = [symbol + '.NS' for symbol in equity_df['SYMBOL'].tolist()]
 # Step 2: Retrieve weekly historical data for the last 25 years using yfinance bulk download
 # Dates: From 2000-08-06 to 2025-08-06, with interval='1wk' for weekly data
 
-
 try:
-    data = yf.download(tickers, start='2020-08-06', end='2026-04-25', interval='1d', group_by='ticker', threads=True, progress=True)
+    data = yf.download(tickers, start='2024-08-06', end='2026-05-25', interval='1h', group_by='ticker', threads=True, progress=True)
     
     # If bulk download fails, fall back to individual downloads
 except Exception as e:
