@@ -40,33 +40,27 @@ def validate_ticker_data(ticker, raw_daily, raw_hourly, z_window=200, ema_period
     Validates a ticker's data for consistency, structural integrity, and inaccuracies.
     Returns: (bool, reason_string)
     """
-    # 1. STRUCTURAL CHECK: Does the ticker exist in both dataframes?
     if ticker not in raw_daily.columns.get_level_values(0):
         return False, "Missing entirely from Daily CSV columns"
     if ticker not in raw_hourly.columns.get_level_values(0):
         return False, "Missing entirely from Hourly CSV columns"
 
     try:
-        # Extract closing prices and drop missing entries
         d_close = raw_daily[ticker]['Close'].dropna()
         h_close = raw_hourly[ticker]['Close'].dropna()
         
-        # 2. SUFFICIENCY CHECK: Is there enough data to compute technical indicators?
         if len(d_close) < z_window:
             return False, f"Insufficient daily data (Has {len(d_close)} rows, needs {z_window} for Z-Score)"
         if len(h_close) < ema_period:
             return False, f"Insufficient hourly data (Has {len(h_close)} rows, needs {ema_period} for EMA)"
 
-        # 3. ACCURACY CHECK: Are there corrupted/impossible price points?
         if (d_close <= 0).any() or (h_close <= 0).any():
             return False, "Data corruption: Contains zero or negative closing prices"
 
-        # 4. CONSISTENCY CHECK: Do extreme, unrealistic single-day data spikes exist?
         daily_pct_changes = d_close.pct_change().abs()
-        if (daily_pct_changes > 4.0).any():  # Flags greater than a 400% price movement in one day
+        if (daily_pct_changes > 4.0).any():  
             return False, "Data anomaly: Contains an unrealistic price spike/drop (>400% in one day)"
 
-        # 5. ALIGNMENT CHECK: Do the daily and hourly data timelines actually overlap?
         d_min, d_max = d_close.index.min(), d_close.index.max()
         h_min, h_max = h_close.index.min(), h_close.index.max()
 
@@ -93,7 +87,6 @@ for ticker in tickers:
         valid_tickers.append(ticker)
     else:
         print(f"  ⚠️ Ticker '{ticker}' REJECTED | Reason: {reason}")
-        # Append to matrix log so it appears in your final CSV spreadsheet
         all_rows_log.append({
             'DateTime': 'INITIALIZATION_PHASE',
             'Ticker': ticker,
@@ -108,7 +101,7 @@ for ticker in tickers:
         })
 
 print(f"-> Integrity checks complete. Proceeding with {len(valid_tickers)} out of {len(tickers)} tickers.\n")
-tickers = valid_tickers  # Update active ticker pool to only include verified clean data
+tickers = valid_tickers  
 
 # -----------------------------
 # UPFRONT PRE-COMPUTATION
@@ -125,19 +118,23 @@ for ticker in tickers:
     except:
         pass
 
-print("[Pre-computing] Daily Last Month Closes...")
+print("[Pre-computing] Daily Last Month Closes (FIXED)...")
 last_month_close_cache = {}   
 for ticker in tickers:
     try:
         close = raw_daily[ticker]['Close'].dropna()
         if not close.empty:
-            monthly_last = close.resample('ME').last()   
+            # FIX: Create an explicit map of (Year, Month) integers -> Last Closing Price
+            monthly_map = close.groupby([close.index.year, close.index.month]).last().to_dict()
+            
             result = {}
             for date in close.index:
-                prev_month_end = (date.replace(day=1) - pd.DateOffset(days=1))
-                prev_month_key = prev_month_end.to_period('M').to_timestamp('M')
-                available = monthly_last[monthly_last.index <= prev_month_key]
-                result[date] = float(available.iloc[-1]) if not available.empty else None
+                # Chronologically compute the exact previous calendar month
+                prev_month = date.month - 1 if date.month > 1 else 12
+                prev_year = date.year if date.month > 1 else date.year - 1
+                
+                # Fetch using the clean lookup tuple
+                result[date] = monthly_map.get((prev_year, prev_month), None)
             last_month_close_cache[ticker] = result
     except:
         pass
@@ -181,7 +178,6 @@ for hourly_ts in backtest_hourly:
     latest_daily_date = available_daily[-1]
 
     for ticker in tickers:
-        # Pull parameters safely (defaulting to NaN if data is missing)
         z_series = zscore_cache.get(ticker, pd.Series(dtype=float))
         zscore = z_series.get(latest_daily_date, np.nan)
         
@@ -194,7 +190,6 @@ for hourly_ts in backtest_hourly:
         h_ema_series = hourly_ema_cache.get(ticker, pd.Series(dtype=float))
         hourly_ema_val = h_ema_series.get(hourly_ts, np.nan)
         
-        # Calculate target threshold (LMC * 0.90)
         target_val = EMA_THRESHOLD * last_month_close if pd.notna(last_month_close) else np.nan
 
         # Evaluate Rule Conditions
@@ -231,7 +226,6 @@ for hourly_ts in backtest_hourly:
         }
         all_rows_log.append(log_entry)
 
-        # Record winning signals
         if status == "SIGNAL_MATCH":
             all_signals.append({
                 'DateTime': hourly_ts_str,
@@ -258,4 +252,4 @@ if all_signals:
     df_out.to_csv(OUTPUT_FILE, index=False)
     print(f"✅ Strategy Signals exported to: {OUTPUT_FILE} ({len(all_signals)} records found)")
 else:
-    print("⚠️ 0 strategic matches tracked in the signals file.") 
+    print("⚠️ 0 strategic matches tracked in the signals file.")
