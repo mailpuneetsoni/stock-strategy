@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 import os
-from datetime import datetime
 
 # -----------------------------
 # CONFIG
@@ -10,15 +9,11 @@ desktop_path  = os.path.join(os.path.expanduser('~'), 'Desktop')
 DAILY_FILE    = os.path.join(desktop_path, 'stock_data_daily.csv')   # daily OHLCV
 HOURLY_FILE   = os.path.join(desktop_path, 'stock_data.csv')          # hourly OHLCV
 OUTPUT_FILE   = os.path.join(desktop_path, 'backtest_signals.csv')    # backtest output
-
-# How many past trading days to backtest over
 LOOKBACK_DAYS = 365
-
-# Rule parameters
-ZSCORE_WINDOW    = 200       # days for SMA and STD
-ZSCORE_THRESHOLD = -1.4      # Rule 1: Z-score must be <= this
-EMA_PERIOD       = 100       # hourly bars for EMA
-EMA_THRESHOLD    = 0.90      # Rule 2: EMA must be < 90% of last month close
+ZSCORE_WINDOW    = 200
+ZSCORE_THRESHOLD = -1.4
+EMA_PERIOD       = 100
+EMA_THRESHOLD    = 0.90
 
 # -----------------------------
 # LOAD DAILY CSV
@@ -36,146 +31,166 @@ print(f"Daily data range: {raw_daily.index[0].strftime('%Y-%m-%d')} to {raw_dail
 print("\nLoading hourly data...")
 raw_hourly = pd.read_csv(HOURLY_FILE, header=[0, 1], index_col=0, parse_dates=True)
 raw_hourly.index = pd.to_datetime(raw_hourly.index).tz_localize(None)  # strip timezone
-hourly_tickers = raw_hourly.columns.get_level_values(0).unique().tolist()
-print(f"Hourly tickers loaded: {len(hourly_tickers)}")
+print(f"Hourly data range  : {raw_hourly.index[0].strftime('%Y-%m-%d')} to {raw_hourly.index[-1].strftime('%Y-%m-%d')}")
 
 # -----------------------------
-# BUILD LIST OF BACKTEST DATES
-# Get all trading days in the daily CSV for the past LOOKBACK_DAYS
-# But we need at least ZSCORE_WINDOW days of history before each date
-# so we need the CSV to go back far enough
+# PRE-COMPUTE: Z-SCORES for all tickers on all daily dates
+# This avoids recomputing Z-score inside the hourly loop
+# Z-score on a given day applies to ALL hourly bars within that day
+# -----------------------------
+print("\nPre-computing Z-scores for all tickers and dates...")
+
+zscore_cache = {}   # {ticker: pd.Series indexed by date}
+
+for ticker in tickers:
+    try:
+        close = raw_daily[ticker]['Close'].dropna()
+        sma   = close.rolling(ZSCORE_WINDOW).mean()
+        std   = close.rolling(ZSCORE_WINDOW).std()
+        z     = (close - sma) / std
+        zscore_cache[ticker] = z
+    except:
+        zscore_cache[ticker] = pd.Series(dtype=float)
+
+print("Z-score pre-computation complete.")
+
+# -----------------------------
+# PRE-COMPUTE: LAST MONTH CLOSE for all tickers on all daily dates
+# For each daily date, what was the last close of the previous month?
+# -----------------------------
+print("Pre-computing last month closes...")
+
+last_month_close_cache = {}   # {ticker: pd.Series indexed by date}
+
+for ticker in tickers:
+    try:
+        close        = raw_daily[ticker]['Close'].dropna()
+        monthly_last = close.resample('ME').last()   # last close of each month
+
+        # For each daily date, look up the previous month's last close
+        result = {}
+        for date in close.index:
+            # Previous month end = one month before current month start
+            prev_month_end = (date.replace(day=1) - pd.DateOffset(days=1))
+            prev_month_key = prev_month_end.to_period('M').to_timestamp('M')
+
+            # Find the closest available month-end close on or before prev_month_key
+            available = monthly_last[monthly_last.index <= prev_month_key]
+            if not available.empty:
+                result[date] = float(available.iloc[-1])
+            else:
+                result[date] = None
+
+        last_month_close_cache[ticker] = result
+    except:
+        last_month_close_cache[ticker] = {}
+
+print("Last month close pre-computation complete.")
+
+# -----------------------------
+# BUILD LIST OF HOURLY BARS TO SCAN
+# Only hourly bars within the backtest window
 # -----------------------------
 all_trading_days = raw_daily.index.sort_values()
+min_history_date = all_trading_days[ZSCORE_WINDOW] if len(all_trading_days) > ZSCORE_WINDOW else all_trading_days[0]
+cutoff_date      = all_trading_days[-1] - pd.DateOffset(days=LOOKBACK_DAYS)
+start_date       = max(cutoff_date, min_history_date)
 
-# Only backtest dates that have at least ZSCORE_WINDOW bars of history before them
-min_history_date = all_trading_days[ZSCORE_WINDOW]   # need 200 bars before this date
+# All hourly timestamps within the backtest window
+hourly_timestamps = raw_hourly.index.sort_values()
+backtest_hourly   = hourly_timestamps[hourly_timestamps >= start_date]
 
-# Backtest window: last LOOKBACK_DAYS trading days that have enough history
-cutoff_date = all_trading_days[-1] - pd.DateOffset(days=LOOKBACK_DAYS)
-backtest_dates = all_trading_days[
-    (all_trading_days >= max(cutoff_date, min_history_date))
-]
-
-print(f"\nBacktest period: {backtest_dates[0].strftime('%Y-%m-%d')} to {backtest_dates[-1].strftime('%Y-%m-%d')}")
-print(f"Total trading days to scan: {len(backtest_dates)}")
-
-# -----------------------------
-# HELPER: LAST MONTH CLOSE
-# For a given scan_date, return the last close of the previous month
-# -----------------------------
-def get_last_month_close(ticker, raw_daily, scan_date):
-    try:
-        close = raw_daily[ticker]['Close'].dropna()
-        first_of_scan_month = scan_date.replace(day=1)
-        prev_month_data = close[close.index < first_of_scan_month]
-        prev_month_data = close[close.index < first_of_scan_month]
-        if prev_month_data.empty:
-            return None
-
-        last_close_date = prev_month_data.index[-1]
-        last_close = float(prev_month_data.iloc[-1])
-        print(f"{ticker} last month close for {last_close_date.strftime('%Y-%m')} = {last_close:.2f}")
-        return last_close
-        if prev_month_data.empty:
-            return None
-        return float(prev_month_data.iloc[-1])
-    except:
-        return None
+print(f"\nBacktest period    : {start_date.strftime('%Y-%m-%d')} to {all_trading_days[-1].strftime('%Y-%m-%d')}")
+print(f"Total hourly bars  : {len(backtest_hourly)}")
+print(f"Total tickers      : {len(tickers)}")
+print(f"Estimated iterations: {len(backtest_hourly) * len(tickers):,}")
 
 # -----------------------------
-# HELPER: RULE 1 — Z-SCORE
-# Uses only daily data UP TO and INCLUDING scan_date
+# HOURLY BACKTEST LOOP
+# For each hourly timestamp, check both rules for all tickers
 # -----------------------------
-def check_rule1(ticker, raw_daily, scan_date, window=200, threshold=-1.4):
-    try:
-        close = raw_daily[ticker]['Close'].dropna()
-        # Only data up to scan_date — no future leakage
-        close = close[close.index <= scan_date]
+all_signals  = []
+total_hours  = len(backtest_hourly)
+last_printed = -1
 
-        if len(close) < window:
-            return False, None
+print("\nStarting hourly backtest scan...\n")
 
-        sma    = close.rolling(window).mean()
-        std    = close.rolling(window).std()
-        zscore = (close - sma) / std
+for hour_num, hourly_ts in enumerate(backtest_hourly):
 
-        latest_zscore = float(zscore.iloc[-1])
-        return latest_zscore <= threshold, round(latest_zscore, 4)
-    except:
-        return False, None
+    # Progress print every 100 hours
+    pct = int(hour_num * 100 / total_hours)
+    if pct % 5 == 0 and pct != last_printed:
+        print(f"  Progress: {pct}% ({hour_num}/{total_hours} hourly bars)...")
+        last_printed = pct
 
-# -----------------------------
-# HELPER: RULE 2 — 100-HOUR EMA
-# Uses only hourly data UP TO and INCLUDING scan_date
-# -----------------------------
-def check_rule2(ticker, last_month_close, raw_hourly, scan_date,
-                ema_period=100, threshold=0.90):
-    try:
-        if last_month_close is None or last_month_close == 0:
-            return False, None, None
+    hourly_date    = hourly_ts.normalize()    # the calendar date this hour belongs to
+    hourly_ts_str  = hourly_ts.strftime('%Y-%m-%d %H:%M')
+    hourly_date_str = hourly_date.strftime('%Y-%m-%d')
 
-        if ticker not in raw_hourly.columns.get_level_values(0):
-            return False, None, None
-
-        hourly_close = raw_hourly[ticker]['Close'].dropna()
-        # Only hourly bars up to end of scan_date — no future leakage
-        hourly_close = hourly_close[hourly_close.index.normalize() <= scan_date]
-
-        if len(hourly_close) < ema_period:
-            return False, None, None
-
-        ema_100    = hourly_close.ewm(span=ema_period, adjust=False).mean()
-        latest_ema = float(ema_100.iloc[-1])
-        target     = threshold * last_month_close
-
-        return latest_ema < target, round(latest_ema, 2), round(target, 2)
-    except:
-        return False, None, None
-
-# -----------------------------
-# BACKTEST LOOP
-# For each trading date, run both rules on all tickers
-# -----------------------------
-all_signals = []
-total_dates = len(backtest_dates)
-
-for day_num, scan_date in enumerate(backtest_dates):
-    scan_date_str = scan_date.strftime('%Y-%m-%d')
-    day_signals   = 0
-
-    print(f"\n[Day {day_num+1}/{total_dates}] Scanning {scan_date_str}...")
+    # Find the most recent daily bar on or before this hourly timestamp's date
+    available_daily = all_trading_days[all_trading_days < hourly_date]
+    if available_daily.empty:
+        continue
+    latest_daily_date = available_daily[-1]
 
     for ticker in tickers:
 
-        # Rule 1
-        r1_pass, zscore = check_rule1(ticker, raw_daily, scan_date)
-        if not r1_pass:
+        # -----------------------------------------------
+        # RULE 1: Z-score from pre-computed cache
+        # Use the Z-score of the latest available daily bar
+        # -----------------------------------------------
+        z_series = zscore_cache.get(ticker, pd.Series(dtype=float))
+        if z_series.empty or latest_daily_date not in z_series.index:
             continue
 
-        # Last month close
-        last_month_close = get_last_month_close(ticker, raw_daily, scan_date)
-        if last_month_close is None:
+        zscore = z_series[latest_daily_date]
+        if pd.isna(zscore) or zscore > ZSCORE_THRESHOLD:
             continue
 
-        # Rule 2
-        r2_pass, ema_val, target_val = check_rule2(
-            ticker, last_month_close, raw_hourly, scan_date
-        )
-        if not r2_pass:
+        # -----------------------------------------------
+        # LAST MONTH CLOSE from pre-computed cache
+        # -----------------------------------------------
+        lmc_dict = last_month_close_cache.get(ticker, {})
+        last_month_close = lmc_dict.get(latest_daily_date, None)
+        if last_month_close is None or last_month_close == 0:
             continue
 
-        # Both rules passed
+        # -----------------------------------------------
+        # RULE 2: 100-hour EMA up to this hourly timestamp
+        # -----------------------------------------------
+        if ticker not in raw_hourly.columns.get_level_values(0):
+            continue
+
+        try:
+            hourly_close = raw_hourly[ticker]['Close'].dropna()
+            # Only bars up to and including this hourly timestamp
+            hourly_slice = hourly_close[hourly_close.index <= hourly_ts]
+
+            if len(hourly_slice) < EMA_PERIOD:
+                continue
+
+            ema_100    = hourly_slice.ewm(span=EMA_PERIOD, adjust=False).mean()
+            latest_ema = float(ema_100.iloc[-1])
+            target     = EMA_THRESHOLD * last_month_close
+
+            if latest_ema >= target:
+                continue
+
+        except:
+            continue
+
+        # -----------------------------------------------
+        # Both rules passed — record signal
+        # -----------------------------------------------
         all_signals.append({
-            'Date'            : scan_date_str,
+            'DateTime'        : hourly_ts_str,
+            'Date'            : hourly_date_str,
             'Ticker'          : ticker,
-            'Z_Score'         : zscore,
+            'Z_Score'         : round(float(zscore), 4),
             'Last_Month_Close': round(last_month_close, 2),
-            'EMA_100h'        : ema_val,
-            'Target_90pct'    : target_val,
+            'EMA_100h'        : round(latest_ema, 2),
+            'Target_90pct'    : round(target, 2),
         })
-        day_signals += 1
-
-    print(f"  → {day_signals} signal(s) on {scan_date_str}")
 
 # -----------------------------
 # SAVE BACKTEST OUTPUT
@@ -184,13 +199,18 @@ print(f"\n{'='*60}")
 if all_signals:
     df_out = pd.DataFrame(all_signals)
     df_out.to_csv(OUTPUT_FILE, index=False)
+
     print(f"✅ Backtest complete.")
-    print(f"   Total signals: {len(all_signals)}")
-    print(f"   Date range   : {df_out['Date'].min()} to {df_out['Date'].max()}")
-    print(f"   Unique tickers: {df_out['Ticker'].nunique()}")
-    print(f"   Saved to     : {OUTPUT_FILE}")
-    print(f"\nSignals per date (top 20):")
-    print(df_out.groupby('Date').size().rename('Signals').tail(20).to_string())
+    print(f"   Total signals    : {len(all_signals)}")
+    print(f"   Unique tickers   : {df_out['Ticker'].nunique()}")
+    print(f"   Date range       : {df_out['Date'].min()} to {df_out['Date'].max()}")
+    print(f"   Saved to         : {OUTPUT_FILE}")
+
+    print(f"\nTop 20 most frequent signal dates:")
+    print(df_out.groupby('Date').size().rename('Signals').sort_values(ascending=False).head(20).to_string())
+
+    print(f"\nTop 10 most frequently signalled tickers:")
+    print(df_out.groupby('Ticker').size().rename('Signals').sort_values(ascending=False).head(10).to_string())
 else:
     print("⚠️  No signals found across the entire backtest period.")
-    print("   Check that your CSV files have enough data and the right date ranges.")x
+    print("   Check that your CSV files overlap in date range and have enough data.")
