@@ -5,11 +5,11 @@ import os
 # -----------------------------
 # CONFIG
 # -----------------------------
-desktop_path  = os.path.join(os.path.expanduser('~'), 'Desktop')
-DAILY_FILE    = os.path.join(desktop_path, 'stock_data_daily.csv')   
-HOURLY_FILE   = os.path.join(desktop_path, 'stock_data.csv')          
-OUTPUT_FILE   = os.path.join(desktop_path, 'backtest_signals.csv')    
-LOG_FILE      = os.path.join(desktop_path, 'backtest_logs.csv')        
+
+DAILY_FILE    = os.path.join( 'D:\\Stock_Strategy\\stock_data_daily.csv')   
+HOURLY_FILE   = os.path.join('D:\\Stock_Strategy\\stock_data.csv')          
+OUTPUT_FILE   = os.path.join('D:\\Stock_Strategy\\backtest_signals.csv')    
+LOG_FILE      = os.path.join('D:\\Stock_Strategy\\backtest_logs.csv')        
 
 LOOKBACK_DAYS = 365
 ZSCORE_WINDOW    = 200
@@ -241,11 +241,15 @@ for hourly_ts in backtest_hourly:
 # SAVE CSV EXPORTS
 # -----------------------------
 print(f"\n{'='*60}")
+now = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+print(f"Completed at: {now}")
 print("Writing files to Desktop...")
 
 df_logs = pd.DataFrame(all_rows_log)
 df_logs.to_csv(LOG_FILE, index=False)
 print(f"📊 Audit Log Matrix exported to: {LOG_FILE} ({len(df_logs):,} items matrixed)")
+now1 = pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+print(f"Audit Log completed at: {now1}")
 
 if all_signals:
     df_out = pd.DataFrame(all_signals)
