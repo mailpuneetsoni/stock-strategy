@@ -5,21 +5,19 @@ import os
 import datetime
 
 # Step 1: Read the tickers from EQUITY_L.csv located on the Desktop
-desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
-equity_file = os.path.join(desktop_path, 'equity_500.csv')
-
+equity_file = r'D:\Stock_Strategy\filtered_nifty_market_cap_stocks.csv'
 # Check if the file exists
 if not os.path.exists(equity_file):
-    raise FileNotFoundError(f"Could not find equity_500.csv at {equity_file}")
+    raise FileNotFoundError(f"Could not find csv at {equity_file}")
 
-# Read the CSV, assuming it has a column named 'SYMBOL' for ticker symbols
+# Read the CSV, assuming it has a column named 'Ticker' for ticker symbols
 try:
     equity_df = pd.read_csv(equity_file)
 except Exception as e:
-    raise ValueError(f"Failed to read equity_500.csv: {e}")
+    raise ValueError(f"Failed to read filtered_nifty_market_cap_stocks.csv: {e}")
 
 # Extract tickers (add '.NS' suffix for NSE tickers as required by yfinance)
-tickers = [symbol + '.NS' for symbol in equity_df['SYMBOL'].tolist()]
+tickers = [symbol for symbol in equity_df['Ticker'].tolist()]
 
 # Step 2: Retrieve weekly historical data for the last 25 years using yfinance bulk download
 # Dates: From 2000-08-06 to 2025-08-06, with interval='1wk' for weekly data
@@ -27,13 +25,22 @@ tickers = [symbol + '.NS' for symbol in equity_df['SYMBOL'].tolist()]
 try:
     data = yf.download(tickers, start='2024-08-06', end='2026-05-25', interval='1h', group_by='ticker', threads=True, progress=True)
     
+    if data is None or getattr(data, "empty", True):
+        raise ValueError("Downloaded data is empty or null")
+
+    print("data type:", type(data))
+    print("data format:", getattr(data, "shape", None))
+    print("data columns:", data.columns if hasattr(data, "columns") else None)
+    print("data head:")
+    print(data.head())
+    
     # If bulk download fails, fall back to individual downloads
 except Exception as e:
     print(f"Bulk download failed: {e}. Falling back to individual downloads.")
     data_dict = {}
     for ticker in tqdm(tickers):
         try:
-            data_dict[ticker] = yf.download(ticker, start='2000-08-06', end='2026-3-28', interval='1wk', progress=False)
+            data_dict[ticker] = yf.download(ticker, start='2024-08-06', end='2026-05-25', interval='1h', progress=False)
         except Exception as ticker_error:
             print(f"Error retrieving data for {ticker}: {ticker_error}. Skipping.")
             continue
@@ -55,14 +62,14 @@ else:
     raise ValueError("No valid data retrieved to process.")
 
 # Step 4: Store the data in a CSV file explicitly on the Desktop
-output_file = os.path.join(desktop_path, 'stock_data.csv')
+output_file = os.path.join('D:\Stock_Strategy\stock_data.csv')
 try:
     data.to_csv(output_file, index=False)
     print(f"Data successfully saved to {output_file}")
 except Exception as e:
     print(f"Error writing to {output_file}: {e}")
     # Attempt to save to an alternative file to avoid data loss
-    alt_output_file = os.path.join(desktop_path, 'stock_data_backup.csv')
+    alt_output_file = os.path.join('D:\Stock_Strategy\stock_data_backup.csv')
     try:
         data.to_csv(alt_output_file, index=False)
         print(f"Data saved to alternative file: {alt_output_file}")
