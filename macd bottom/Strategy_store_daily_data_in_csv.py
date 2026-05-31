@@ -4,18 +4,17 @@ from tqdm import tqdm
 import os
 
 # Step 1: Read tickers from equity_500.csv on the Desktop
-desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
-equity_file = os.path.join(desktop_path, 'equity_500.csv')
+equity_file = r'D:\Stock_Strategy\filtered_nifty_market_cap_stocks.csv'
 
 if not os.path.exists(equity_file):
-    raise FileNotFoundError(f"Could not find equity_500.csv at {equity_file}")
+    raise FileNotFoundError(f"Could not find csv at {equity_file}")
 
 try:
     equity_df = pd.read_csv(equity_file)
 except Exception as e:
-    raise ValueError(f"Failed to read equity_500.csv: {e}")
+    raise ValueError(f"Failed to read filtered_nifty_market_cap_stocks.csv: {e}")
 
-tickers = [symbol + '.NS' for symbol in equity_df['SYMBOL'].tolist()]
+tickers = [symbol for symbol in equity_df['Ticker '].tolist()]
 
 # Step 2: Download DAILY data for the last ~2 years
 try:
@@ -59,13 +58,13 @@ else:
     raise ValueError("No valid data retrieved to process.")
 
 # Step 4: Save to stock_data_daily.csv on the Desktop
-output_file = os.path.join(desktop_path, 'stock_data_daily.csv')  # <-- separate file
+output_file = os.path.join('D:\Stock_Strategy\stock_data_daily.csv') 
 try:
     data.to_csv(output_file, index=False)
     print(f"Daily data successfully saved to {output_file}")
 except Exception as e:
     print(f"Error writing to {output_file}: {e}")
-    alt_output_file = os.path.join(desktop_path, 'stock_data_daily_backup.csv')
+    alt_output_file = os.path.join('D:\Stock_Strategy\stock_data_daily_backup.csv')
     try:
         data.to_csv(alt_output_file, index=False)
         print(f"Data saved to alternative file: {alt_output_file}")
