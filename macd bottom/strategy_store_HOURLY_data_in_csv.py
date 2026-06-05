@@ -23,7 +23,7 @@ tickers = [symbol for symbol in equity_df['Ticker'].tolist()]
 # Dates: From 2000-08-06 to 2025-08-06, with interval='1wk' for weekly data
 
 try:
-    data = yf.download(tickers, start='2024-08-06', end='2026-05-25', interval='1h', group_by='ticker', threads=True, progress=True)
+    data = yf.download(tickers, start='2025-09-03', end='2026-06-05', interval='1h', group_by='ticker', threads=True, progress=True)
     
     if data is None or getattr(data, "empty", True):
         raise ValueError("Downloaded data is empty or null")
@@ -40,7 +40,7 @@ except Exception as e:
     data_dict = {}
     for ticker in tqdm(tickers):
         try:
-            data_dict[ticker] = yf.download(ticker, start='2024-08-06', end='2026-05-25', interval='1h', progress=False)
+            data_dict[ticker] = yf.download(ticker, start='2025-09-03', end='2026-06-05', interval='1h', progress=False)
         except Exception as ticker_error:
             print(f"Error retrieving data for {ticker}: {ticker_error}. Skipping.")
             continue
@@ -62,7 +62,7 @@ else:
     raise ValueError("No valid data retrieved to process.")
 
 # Step 4: Store the data in a CSV file explicitly on the Desktop
-output_file = os.path.join('D:\Stock_Strategy\stock_data.csv')
+output_file = os.path.join('D:\Stock_Strategy\input_stock_data_hourly.csv')
 try:
     data.to_csv(output_file, index=False)
     print(f"Data successfully saved to {output_file}")

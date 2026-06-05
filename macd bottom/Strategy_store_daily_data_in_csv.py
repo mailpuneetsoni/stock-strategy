@@ -14,14 +14,14 @@ try:
 except Exception as e:
     raise ValueError(f"Failed to read filtered_nifty_market_cap_stocks.csv: {e}")
 
-tickers = [symbol for symbol in equity_df['Ticker '].tolist()]
+tickers = [symbol for symbol in equity_df['Ticker'].tolist()]
 
 # Step 2: Download DAILY data for the last ~2 years
 try:
     data = yf.download(
         tickers,
-        start='2024-01-01',
-        end='2026-05-25',
+        start='2025-06-03',
+        end='2026-06-05',
         interval='1d',          # <-- daily bars
         group_by='ticker',
         threads=True,
@@ -35,8 +35,8 @@ except Exception as e:
         try:
             data_dict[ticker] = yf.download(
                 ticker,
-                start='2024-01-01',
-                end='2026-05-25',
+                start='2025-06-03',
+                end='2026-06-05',
                 interval='1d',
                 progress=False
             )
